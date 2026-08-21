@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>API consulta IBAL</title>
+  <style>
+    :root {
+      --ink: #2d3748;
+      --muted: #718096;
+      --line: #e2e8f0;
+      --ok: #c53030;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: #edf2f7;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 1.4rem 1rem 2.5rem; }
+    h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+    .lead { color: var(--muted); margin: 0 0 1rem; }
+    .panel {
+      background: #fff;
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 8px rgba(0,0,0,.06);
+    }
+    .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    input, textarea {
+      font: inherit;
+      border: 1px solid #cbd5e0;
+      border-radius: 8px;
+      padding: .65rem .75rem;
+    }
+    input { flex: 1; min-width: 160px; }
+    button {
+      background: #2b6cb0;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: .65rem 1.1rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: wait; }
+    .cards {
+      display: grid;
+      gap: .75rem;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      margin: 1rem 0;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: .85rem 1rem;
+      border-left: 4px solid #4a90a4;
+      box-shadow: 0 1px 6px rgba(0,0,0,.05);
+    }
+    .card.pay { border-left-color: #2f855a; }
+    .card.warn { border-left-color: #dd6b20; }
+    .card label {
+      display: block;
+      font-size: .68rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .card .val { font-size: 1.15rem; font-weight: 700; margin: .15rem 0 .35rem; }
+    .card .sub { font-size: .85rem; color: #4a5568; }
+    .estado { color: var(--ok); font-weight: 800; letter-spacing: .04em; }
+    pre {
+      background: #1a202c;
+      color: #9ae6b4;
+      padding: .9rem;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: .8rem;
+      max-height: 420px;
+    }
+    code { background: #edf2f7; padding: .05rem .3rem; border-radius: 3px; }
+    .hint { font-size: .85rem; color: #4a5568; }
+    .err { color: #c53030; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>API consulta IBAL</h1>
+    <p class="lead">
+      Envía un JSON con la matrícula y recibe las 4 tarjetas de
+      <a href="https://ibal.gov.co/pagos/" target="_blank" rel="noopener">ibal.gov.co/pagos</a>.
+    </p>
+
+    <section class="panel">
+      <form id="f" class="row">
+        <input id="m" type="text" inputmode="numeric" value="24714" required />
+        <button type="submit" id="b">Consultar JSON</button>
+      </form>
+      <p class="hint" id="status">
+        POST <code>/api/consulta</code> · body <code>{"matricula":"24714"}</code>
+      </p>
+      <div class="cards" id="cards" hidden></div>
+      <pre id="out">{}</pre>
+    </section>
+  </main>
+  <script>
+    var f = document.getElementById('f');
+    var m = document.getElementById('m');
+    var b = document.getElementById('b');
+    var out = document.getElementById('out');
+    var cards = document.getElementById('cards');
+    var status = document.getElementById('status');
+
+    function esc(s) {
+      return String(s ?? '—')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function show(data) {
+      out.textContent = JSON.stringify(data, null, 2);
+      if (!data || !data.pendiente) {
+        cards.hidden = true;
+        cards.innerHTML = '';
+        return;
+      }
+      cards.hidden = false;
+      cards.innerHTML =
+        '<article class="card warn"><label>Fecha de suspensión</label><div class="val">' +
+        esc(data.fecha_suspension) +
+        '</div><div class="sub">Periodo de facturación ' +
+        esc(data.periodo) +
+        '</div></article>' +
+        '<article class="card"><label>Nº matrícula</label><div class="val">' +
+        esc(data.matricula) +
+        '</div><label>Número de factura</label><div class="sub">' +
+        esc(data.numero_factura || data.factura) +
+        '</div></article>' +
+        '<article class="card"><label>Nombre del titular</label><div class="val" style="font-size:1rem">' +
+        esc(data.titular) +
+        '</div><label>Dirección del titular</label><div class="sub">' +
+        esc(data.direccion) +
+        '</div></article>' +
+        '<article class="card pay"><label>Pago total</label><div class="val">' +
+        esc(data.pago_total_formato || data.monto_formato) +
+        '</div><div class="estado">' +
+        esc(data.estado_pago) +
+        '</div></article>';
+    }
+
+    f.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var matricula = String(m.value || '').replace(/\D+/g, '');
+      if (!matricula) return;
+      var payload = { matricula: matricula };
+      b.disabled = true;
+      b.textContent = 'Consultando…';
+      status.textContent = 'Playwright abre IBAL (puede tardar 30–90 s)…';
+      status.className = 'hint';
+      out.textContent = JSON.stringify(payload, null, 2);
+      cards.hidden = true;
+
+      try {
+        var res = await fetch('/api/consulta', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        var data = await res.json();
+        show(data);
+        if (data.ok && data.pendiente) {
+          status.textContent = 'Consulta OK';
+          status.className = 'hint';
+        } else if (data.ok && data.pendiente === false) {
+          status.textContent = data.mensaje || 'Sin facturas pendientes';
+        } else {
+          status.textContent = data.error || 'Error';
+          status.className = 'hint err';
+        }
+      } catch (err) {
+        status.textContent = 'No se pudo conectar a la API';
+        status.className = 'hint err';
+        out.textContent = JSON.stringify({ ok: false, error: String(err.message || err) }, null, 2);
+      } finally {
+        b.disabled = false;
+        b.textContent = 'Consultar JSON';
+      }
+    });
+  </script>
+</body>
+</html>

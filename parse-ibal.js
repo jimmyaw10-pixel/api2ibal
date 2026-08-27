@@ -33,18 +33,43 @@ function formatCop(n) {
 
 function parseEpayco(html) {
   const src = String(html || '');
-  const amount = pick(src, /amount:\s*["']?(\d+)["']?/i) || pick(src, /["']amount["']\s*:\s*["']?(\d+)/i);
+  const amount =
+    pick(src, /amount:\s*["']?(\d+)["']?/i) ||
+    pick(src, /["']amount["']\s*:\s*["']?(\d+)/i) ||
+    pick(src, /"amount"\s*:\s*(\d+)/i) ||
+    pick(src, /amountInCents["']?\s*[:=]\s*["']?(\d+)/i);
+  let monto = parseMoney(amount);
+  if (monto != null && /amountInCents/i.test(src) && monto > 999999) {
+    monto = Math.round(monto / 100);
+  }
   const invoice =
     pick(src, /invoice:\s*["']([^"']+)["']/i) ||
-    pick(src, /["']invoice["']\s*:\s*["']([^"']+)["']/i);
-  const name = pick(src, /name:\s*["']([^"']+)["']/i);
-  const description = pick(src, /description:\s*["']([^"']*)["']/i);
+    pick(src, /["']invoice["']\s*:\s*["']([^"']+)["']/i) ||
+    pick(src, /"invoice"\s*:\s*"([^"']+)"/i) ||
+    pick(src, /numeroFactura["']?\s*[:=]\s*["']?(\d+)/i);
+  const name = pick(src, /name:\s*["']([^"']+)["']/i) || pick(src, /"name"\s*:\s*"([^"']+)"/i);
+  const description =
+    pick(src, /description:\s*["']([^"']*)["']/i) ||
+    pick(src, /"description"\s*:\s*"([^"']*)"/i);
   return {
-    monto: parseMoney(amount),
+    monto,
     factura: invoice,
     matricula: name,
     descripcion: description,
   };
+}
+
+function tieneDatosFactura(html) {
+  const src = String(html || '');
+  if (src.length < 80) return false;
+  return (
+    /Consulta Exitosa/i.test(src) ||
+    /PAGO TOTAL/i.test(src) ||
+    /FECHA DE SUSPENSI/i.test(src) ||
+    /amount:\s*["']?\d+/i.test(src) ||
+    /"amount"\s*:\s*\d+/i.test(src) ||
+    /no se encue?tran facturas pendientes/i.test(src)
+  );
 }
 
 function parseTextoIbal(htmlOrText, matriculaFallback) {
@@ -243,5 +268,6 @@ module.exports = {
   parseEpayco,
   toApiResponse,
   formatCop,
+  tieneDatosFactura,
   SAMPLE_24714,
 };

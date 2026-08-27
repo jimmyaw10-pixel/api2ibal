@@ -4,6 +4,11 @@
  * POST /api/consulta   { "matricula": "24714" }
  * GET  /api/consulta?matricula=24714
  * GET  /api/health
+ *
+ * Prueba local (desde esta carpeta):
+ *   npm install
+ *   npm start
+ *   → http://localhost:3000/api/consulta?matricula=24714
  */
 
 const path = require('path');
@@ -65,23 +70,6 @@ function normalizeMatricula(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
-async function createIbalContext(browser) {
-  const context = await browser.newContext({
-    locale: 'es-CO',
-    timezoneId: 'America/Bogota',
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1360, height: 900 },
-    extraHTTPHeaders: {
-      'Accept-Language': 'es-CO,es;q=0.9',
-    },
-  });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  });
-  return context;
-}
-
 async function leerCsrf(page) {
   let csrf = await page
     .locator('input[name="csrf_test_name"]')
@@ -91,48 +79,11 @@ async function leerCsrf(page) {
 
   if (csrf) return csrf;
 
-  csrf = await page
-    .evaluate(() => {
-      const el = document.querySelector('input[name="csrf_test_name"]');
-      return el && el.value ? el.value : '';
-    })
-    .catch(() => '');
-
-  if (csrf) return csrf;
-
   const html = await page.content().catch(() => '');
   const m =
     html.match(/name=["']csrf_test_name["'][^>]*value=["']([^"']+)["']/i) ||
     html.match(/value=["']([^"']+)["'][^>]*name=["']csrf_test_name["']/i);
   return m ? m[1] : '';
-}
-
-async function cargarPaginaIbal(page) {
-  await page
-    .goto(IBAL_URL, { waitUntil: 'domcontentloaded', timeout: 90000 })
-    .catch(() => page.goto(IBAL_URL, { waitUntil: 'load', timeout: 90000 }));
-
-  try {
-    await page.waitForSelector('input[name="csrf_test_name"], input[name="matricula_cliente"]', {
-      timeout: 35000,
-    });
-  } catch {
-    await page.waitForTimeout(4000);
-  }
-
-  try {
-    await page.waitForFunction(
-      () => {
-        const csrf = document.querySelector('input[name="csrf_test_name"]');
-        if (csrf && csrf.value) return true;
-        const html = document.documentElement.innerHTML || '';
-        return /csrf_test_name/.test(html);
-      },
-      { timeout: 15000 }
-    );
-  } catch {
-    await page.waitForTimeout(2000);
-  }
 }
 
 async function postConsultaIbal(page, matricula, csrf) {
@@ -146,7 +97,7 @@ async function postConsultaIbal(page, matricula, csrf) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: 'https://ibal.gov.co/pagos/',
         },
         body,
         credentials: 'include',
@@ -157,18 +108,19 @@ async function postConsultaIbal(page, matricula, csrf) {
   );
 }
 
-async function esperarResultadoIbal(page) {
-  await page.waitForTimeout(1200);
+async function esperarResultadoEnPagina(page) {
+  await page.waitForTimeout(1500);
   try {
     await page.waitForFunction(
       () => {
         const t = document.body ? document.body.innerText : '';
+        const html = document.documentElement.innerHTML || '';
         return (
           /Consulta Exitosa/i.test(t) ||
           /FECHA DE SUSPENSI/i.test(t) ||
           /no se encue?tran facturas pendientes/i.test(t) ||
           /PAGO TOTAL/i.test(t) ||
-          /amount:\s*["']?\d+/i.test(document.documentElement.innerHTML)
+          /amount:\s*["']?\d+/i.test(html)
         );
       },
       { timeout: 25000 }
@@ -178,17 +130,39 @@ async function esperarResultadoIbal(page) {
   }
 }
 
+/**
+ * Flujo igual al portal IBAL: cargar → CSRF → matrícula → Consultar → leer HTML+texto
+ */
 async function consultarMatricula(matricula) {
   const b = await getBrowser();
-  const context = await createIbalContext(b);
+  const context = await b.newContext({
+    locale: 'es-CO',
+    timezoneId: 'America/Bogota',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    viewport: { width: 1360, height: 900 },
+    extraHTTPHeaders: { 'Accept-Language': 'es-CO,es;q=0.9' },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   const page = await context.newPage();
 
   try {
-    await cargarPaginaIbal(page);
-    let csrf = await leerCsrf(page);
+    await page.goto(IBAL_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
 
+    try {
+      await page.waitForSelector('input[name="matricula_cliente"]', { timeout: 35000 });
+    } catch {
+      await page.waitForTimeout(4000);
+    }
+
+    let csrf = await leerCsrf(page);
     if (!csrf) {
-      await cargarPaginaIbal(page);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.waitForTimeout(3000);
       csrf = await leerCsrf(page);
     }
 
@@ -198,12 +172,12 @@ async function consultarMatricula(matricula) {
 
     await page.locator('input[name="matricula_cliente"]').first().fill(String(matricula));
 
-    // Enviar como usuario real (más fiable que solo fetch)
+    // 1) Clic en Consultar (como usuario real)
     let submitted = false;
     try {
       const btn = page.locator('#busca_desktop, #busca_mobile, button[type="submit"]').first();
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 50000 }).catch(() => null),
         btn.click({ timeout: 10000 }),
       ]);
       submitted = true;
@@ -211,26 +185,29 @@ async function consultarMatricula(matricula) {
       submitted = false;
     }
 
+    // 2) Fallback: POST + pintar respuesta en la página
     if (!submitted) {
       const htmlFetch = await postConsultaIbal(page, matricula, csrf);
       await page.setContent(htmlFetch, { waitUntil: 'domcontentloaded' });
     }
 
-    await esperarResultadoIbal(page);
+    await esperarResultadoEnPagina(page);
 
     const html = await page.content();
     const texto = await page.innerText('body').catch(() => '');
-    const parsed = parseTextoIbal(html + '\n' + texto, String(matricula));
-    const result = toApiResponse(parsed, String(matricula));
+    const fuente = html + '\n' + texto;
 
-    // Si falló el parse, reintentar con POST fresco
+    let parsed = parseTextoIbal(fuente, String(matricula));
+    let result = toApiResponse(parsed, String(matricula));
+
+    // 3) Si no leyó nada, reintentar POST directo y parsear HTML crudo
     if (result.ok === false) {
-      await cargarPaginaIbal(page);
-      csrf = await leerCsrf(page);
-      if (csrf) {
-        const htmlRetry = await postConsultaIbal(page, matricula, csrf);
-        const parsedRetry = parseTextoIbal(htmlRetry, String(matricula));
-        return toApiResponse(parsedRetry, String(matricula));
+      const csrf2 = await leerCsrf(page).catch(() => csrf);
+      const htmlRetry = await postConsultaIbal(page, matricula, csrf2 || csrf);
+      parsed = parseTextoIbal(htmlRetry, String(matricula));
+      result = toApiResponse(parsed, String(matricula));
+      if (result.ok === false) {
+        result.debug_texto = String(texto || htmlRetry).replace(/\s+/g, ' ').slice(0, 1200);
       }
     }
 
@@ -324,7 +301,7 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log(`API IBAL en http://localhost:${PORT}`);
-  console.log(`POST /api/consulta  { "matricula": "24714" }`);
+  console.log(`GET/POST /api/consulta?matricula=24714`);
   getBrowser().catch((e) => console.warn('Warmup browser:', e.message));
 });
 

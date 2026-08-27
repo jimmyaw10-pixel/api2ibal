@@ -59,12 +59,53 @@ function parseTextoIbal(htmlOrText, matriculaFallback) {
   if (/no se encue?tran facturas pendientes/i.test(text) || /no se encue?tran facturas pendientes/i.test(raw)) {
     return {
       pendiente: false,
+      sin_facturas: true,
       matricula: String(matriculaFallback || pick(text, /matr[ií]cula\s+(\d+)/i) || ''),
       mensaje: 'No hay facturas pendientes',
     };
   }
 
   const epayco = parseEpayco(raw);
+
+  // Señales claras de factura en epayco aunque falte texto visible
+  if (epayco.factura && epayco.monto != null && epayco.monto > 0) {
+    const fecha_suspension =
+      pick(text, /FECHA\s+DE\s+SUSPENSI[ÓO]N\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i) ||
+      pick(text, /SUSPENSI[ÓO]N\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    const periodo =
+      pick(text, /Periodo\s+de\s+facturaci[oó]n\s+([A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+del\s+\d{4})/i) ||
+      pick(text, /Periodo\s+de\s+facturaci[oó]n\s*[:：]?\s*([A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+del\s+\d{4})/i);
+    const titular =
+      pick(text, /NOMBRE\s+DEL\s+TITULAR\s+(.+?)\s+DIRECCI[ÓO]N\s+DEL\s+TITULAR/i) ||
+      pick(text, /NOMBRE\s+DEL\s+TITULAR\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&Y]{3,90})/i);
+    const direccion =
+      pick(text, /DIRECCI[ÓO]N\s+DEL\s+TITULAR\s+(.+?)\s+PAGO\s+TOTAL/i) ||
+      pick(
+        text,
+        /DIRECCI[ÓO]N\s+DEL\s+TITULAR\s+([A-Z0-9ÁÉÍÓÚÑ#\- ].{2,90}?)(?:\s+PAGO|\s+NO\s+PAGADA|\s+PAGADA|$)/i
+      );
+    const estado_pago = pick(text, /\b(NO\s+PAGADA|PAGADA)\b/i);
+
+    return {
+      pendiente: true,
+      sin_facturas: false,
+      matricula: String(epayco.matricula || matriculaFallback || pick(text, /N[°º.]?\s*MATR[IÍ]CULA\s+(\d+)/i) || ''),
+      factura: String(epayco.factura),
+      numero_factura: String(epayco.factura),
+      titular: titular || null,
+      direccion: direccion || null,
+      fecha_suspension: fecha_suspension || null,
+      fecha_corte: fecha_suspension || null,
+      periodo: periodo || null,
+      monto: epayco.monto,
+      pago_total: epayco.monto,
+      monto_formato: formatCop(epayco.monto),
+      pago_total_formato: formatCop(epayco.monto),
+      estado_pago: estado_pago || null,
+      moneda: 'COP',
+      descripcion: epayco.descripcion || 'Factura de servicios públicos',
+    };
+  }
 
   const fecha_suspension =
     pick(text, /FECHA\s+DE\s+SUSPENSI[ÓO]N\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i) ||
@@ -100,8 +141,14 @@ function parseTextoIbal(htmlOrText, matriculaFallback) {
 
   const estado_pago = pick(text, /\b(NO\s+PAGADA|PAGADA)\b/i);
 
+  const tieneDeuda =
+    !!(factura && monto != null && monto > 0) ||
+    /NO\s+PAGADA/i.test(text) ||
+    (/Consulta Exitosa/i.test(text) && !!factura);
+
   return {
-    pendiente: !!(factura && monto != null && monto > 0) || /NO\s+PAGADA/i.test(text),
+    pendiente: tieneDeuda,
+    sin_facturas: false,
     matricula: matricula ? String(matricula) : String(matriculaFallback || ''),
     factura: factura ? String(factura) : null,
     numero_factura: factura ? String(factura) : null,
@@ -125,7 +172,7 @@ function toApiResponse(parsed, matriculaFallback) {
     return { ok: false, error: 'Sin datos' };
   }
 
-  if (parsed.pendiente === false) {
+  if (parsed.sin_facturas === true) {
     return {
       ok: true,
       pendiente: false,

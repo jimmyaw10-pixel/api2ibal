@@ -157,6 +157,27 @@ async function postConsultaIbal(page, matricula, csrf) {
   );
 }
 
+async function esperarResultadoIbal(page) {
+  await page.waitForTimeout(1200);
+  try {
+    await page.waitForFunction(
+      () => {
+        const t = document.body ? document.body.innerText : '';
+        return (
+          /Consulta Exitosa/i.test(t) ||
+          /FECHA DE SUSPENSI/i.test(t) ||
+          /no se encue?tran facturas pendientes/i.test(t) ||
+          /PAGO TOTAL/i.test(t) ||
+          /amount:\s*["']?\d+/i.test(document.documentElement.innerHTML)
+        );
+      },
+      { timeout: 25000 }
+    );
+  } catch {
+    await page.waitForTimeout(2000);
+  }
+}
+
 async function consultarMatricula(matricula) {
   const b = await getBrowser();
   const context = await createIbalContext(b);
@@ -175,17 +196,45 @@ async function consultarMatricula(matricula) {
       throw new Error('No se encontró el formulario IBAL (¿challenge anti-bot?)');
     }
 
-    let html = await postConsultaIbal(page, matricula, csrf);
+    await page.locator('input[name="matricula_cliente"]').first().fill(String(matricula));
 
-    // Si el CSRF expiró, recargar una vez y reintentar
-    if (/csrf|token|expir/i.test(html) && !/Consulta Exitosa|PAGO TOTAL|no se encue?tran facturas/i.test(html)) {
-      await cargarPaginaIbal(page);
-      csrf = await leerCsrf(page);
-      if (csrf) html = await postConsultaIbal(page, matricula, csrf);
+    // Enviar como usuario real (más fiable que solo fetch)
+    let submitted = false;
+    try {
+      const btn = page.locator('#busca_desktop, #busca_mobile, button[type="submit"]').first();
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => null),
+        btn.click({ timeout: 10000 }),
+      ]);
+      submitted = true;
+    } catch {
+      submitted = false;
     }
 
-    const parsed = parseTextoIbal(html, String(matricula));
-    return toApiResponse(parsed, String(matricula));
+    if (!submitted) {
+      const htmlFetch = await postConsultaIbal(page, matricula, csrf);
+      await page.setContent(htmlFetch, { waitUntil: 'domcontentloaded' });
+    }
+
+    await esperarResultadoIbal(page);
+
+    const html = await page.content();
+    const texto = await page.innerText('body').catch(() => '');
+    const parsed = parseTextoIbal(html + '\n' + texto, String(matricula));
+    const result = toApiResponse(parsed, String(matricula));
+
+    // Si falló el parse, reintentar con POST fresco
+    if (result.ok === false) {
+      await cargarPaginaIbal(page);
+      csrf = await leerCsrf(page);
+      if (csrf) {
+        const htmlRetry = await postConsultaIbal(page, matricula, csrf);
+        const parsedRetry = parseTextoIbal(htmlRetry, String(matricula));
+        return toApiResponse(parsedRetry, String(matricula));
+      }
+    }
+
+    return result;
   } finally {
     await context.close();
   }

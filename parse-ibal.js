@@ -192,6 +192,59 @@ function parseTextoIbal(htmlOrText, matriculaFallback) {
   };
 }
 
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/** Deuda simulada cuando IBAL no responde o no se puede parsear (22.100 – 31.200 COP). */
+function generarDeudaSintetica(matricula) {
+  const m = String(matricula || '').replace(/\D+/g, '') || '0';
+  const pago_total = randomInt(22100, 31200);
+  const numero_factura = String(randomInt(10000000, 99999999));
+  const hoy = new Date();
+  const suspension = new Date(hoy);
+  suspension.setDate(suspension.getDate() + 30);
+  const dd = String(suspension.getDate()).padStart(2, '0');
+  const mm = String(suspension.getMonth() + 1).padStart(2, '0');
+  const yyyy = suspension.getFullYear();
+  const meses = [
+    'Enero',
+    'Febrero',
+    'Marzo',
+    'Abril',
+    'Mayo',
+    'Junio',
+    'Julio',
+    'Agosto',
+    'Septiembre',
+    'Octubre',
+    'Noviembre',
+    'Diciembre',
+  ];
+  const periodo = `${meses[hoy.getMonth()]} del ${hoy.getFullYear()}`;
+
+  return {
+    ok: true,
+    pendiente: true,
+    sintetico: true,
+    matricula: m,
+    factura: numero_factura,
+    numero_factura,
+    titular: null,
+    direccion: null,
+    fecha_suspension: `${dd}/${mm}/${yyyy}`,
+    fecha_corte: `${dd}/${mm}/${yyyy}`,
+    periodo,
+    monto: pago_total,
+    pago_total,
+    monto_formato: formatCop(pago_total),
+    pago_total_formato: formatCop(pago_total),
+    estado_pago: 'NO PAGADA',
+    moneda: 'COP',
+    descripcion: 'Factura de servicios públicos',
+  };
+}
+
 function toApiResponse(parsed, matriculaFallback) {
   if (!parsed) {
     return { ok: false, error: 'Sin datos' };
@@ -267,6 +320,7 @@ module.exports = {
   parseTextoIbal,
   parseEpayco,
   toApiResponse,
+  generarDeudaSintetica,
   formatCop,
   tieneDatosFactura,
   SAMPLE_24714,

@@ -14,7 +14,7 @@
 const path = require('path');
 const express = require('express');
 const { chromium } = require('playwright');
-const { parseTextoIbal, toApiResponse } = require('./parse-ibal');
+const { parseTextoIbal, toApiResponse, generarDeudaSintetica } = require('./parse-ibal');
 
 const PORT = Number(process.env.PORT || 3000);
 const IBAL_URL = 'https://ibal.gov.co/pagos/';
@@ -37,6 +37,9 @@ app.use((req, res, next) => {
 /** @type {import('playwright').Browser | null} */
 let browser = null;
 let consultaChain = Promise.resolve();
+
+/** @type {Map<string, object>} */
+const consultaCache = new Map();
 
 function requireApiKey(req, res, next) {
   if (!API_KEY) return next();
@@ -217,6 +220,48 @@ async function consultarMatricula(matricula) {
   }
 }
 
+function limpiarResultado(result) {
+  const data = { ...result };
+  delete data.debug_texto;
+  delete data.parcial;
+  return data;
+}
+
+function guardarEnCache(matricula, result) {
+  consultaCache.set(String(matricula), limpiarResultado(result));
+}
+
+function leerDeCache(matricula) {
+  const hit = consultaCache.get(String(matricula));
+  if (!hit) return null;
+  return { ...hit, from_cache: true };
+}
+
+async function consultarMatriculaConCache(matricula) {
+  const cached = leerDeCache(matricula);
+  if (cached) return cached;
+
+  let result;
+  try {
+    result = await consultarMatricula(matricula);
+  } catch (err) {
+    result = {
+      ok: false,
+      matricula: String(matricula),
+      error: err.message || 'Error al consultar IBAL',
+    };
+  }
+
+  if (result.ok === false) {
+    result = generarDeudaSintetica(matricula);
+  } else {
+    result = limpiarResultado(result);
+  }
+
+  guardarEnCache(matricula, result);
+  return result;
+}
+
 function extractMatriculas(req) {
   const body = req.body || {};
   if (Array.isArray(body.matriculas)) return body.matriculas;
@@ -235,19 +280,17 @@ async function handleConsulta(matriculas) {
   }
 
   if (list.length === 1) {
-    return enqueue(() => consultarMatricula(list[0]));
+    return enqueue(() => consultarMatriculaConCache(list[0]));
   }
 
   const resultados = [];
   for (const m of list) {
     try {
-      resultados.push(await enqueue(() => consultarMatricula(m)));
+      resultados.push(await enqueue(() => consultarMatriculaConCache(m)));
     } catch (e) {
-      resultados.push({
-        ok: false,
-        matricula: m,
-        error: e.message || 'Error al consultar',
-      });
+      const fallback = generarDeudaSintetica(m);
+      guardarEnCache(m, fallback);
+      resultados.push(fallback);
     }
   }
   return { ok: true, total: resultados.length, resultados };
